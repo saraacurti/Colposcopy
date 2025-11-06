@@ -5,22 +5,6 @@ from glob import glob
 from PIL import Image
 from tqdm import tqdm
 from torchvision import transforms
-import torchvision.transforms.functional as F
-
-# ============================================================
-# CONFIGURAZIONE
-# ============================================================
-CLASSES = ["G1", "G2", "NEG"]
-
-# Cartella di origine (con ROI + maschere)
-SOURCE_DIR = "/Users/saracurti/Desktop/IMM_PROC"
-
-# Cartella di output (dataset finale)
-OUTPUT_DIR = "/Users/saracurti/Desktop/dataset_final"
-
-# Rapporto di divisione: train / val / test
-SPLIT_RATIOS = (0.70, 0.10, 0.20)
-
 
 # ============================================================
 # 1Augmentazione opzionale
@@ -48,19 +32,19 @@ AUGMENT = AdvancedAugment()
 # ============================================================
 # Divisione in train / val / test (solo ROI)
 # ============================================================
-def split_dataset(augment = False):
+def split_dataset(class_names, source_dir, output_dir, split_ratio, augment = False):
     print(" Divisione in train / val / test...")
-    train_ratio, val_ratio, test_ratio = SPLIT_RATIOS
+    train_ratio, val_ratio, test_ratio = split_ratio
 
     # Crea struttura di cartelle
     for split in ["train", "val", "test"]:
-        for cls in CLASSES:
-            os.makedirs(os.path.join(OUTPUT_DIR, split, cls), exist_ok=True)
+        for cls in class_names:
+            os.makedirs(os.path.join(output_dir, split, cls), exist_ok=True)
 
     # Divisione e copia file
-    for cls in CLASSES:
+    for cls in class_names:
         # Considera solo immagini ROI
-        images = sorted(glob(os.path.join(SOURCE_DIR, cls, "*_roi.jpg")))
+        images = sorted(glob(os.path.join(source_dir, cls, "*_roi.jpg")))
         random.shuffle(images)
 
         n_total = len(images)
@@ -75,7 +59,7 @@ def split_dataset(augment = False):
 
         for split_name, imgs in splits.items():
             for img_path in tqdm(imgs, desc=f"{cls} → {split_name}"):
-                dst_folder = os.path.join(OUTPUT_DIR, split_name, cls)
+                dst_folder = os.path.join(output_dir, split_name, cls)
 
                 # Copia solo la ROI
                 shutil.copy(img_path, dst_folder)
@@ -87,9 +71,9 @@ def split_dataset(augment = False):
 
     # Se richiesto → esegue augmentation solo sul training
     if augment:
-        visual_smote(os.path.join(OUTPUT_DIR, "train"))
+        visual_smote(os.path.join(output_dir, "train"))
 
-    print(f"📂 Dataset salvato in: {OUTPUT_DIR}")
+    print(f"📂 Dataset salvato in: {output_dir}")
 
 
 # ============================================================
@@ -125,3 +109,29 @@ def visual_smote(train_dir):
     print("\nBilanciamento completato.")
     final_counts = {cls: len(glob(os.path.join(train_dir, cls, "*_roi.jpg"))) for cls in CLASSES}
     print(f"Dopo bilanciamento: {final_counts}")
+
+
+
+if __name__ == "__main__":
+    # ============================================================
+    # CONFIGURAZIONE
+    # ============================================================
+    CLASSES = ["G1", "G2", "NEG"]
+
+    # Cartella di origine (con ROI + maschere)
+    SOURCE_DIR = "/home/phd2/Documenti/colposcopy_data/images_cropped"
+
+    # Cartella di output (dataset finale)
+    AUGMENT = False  # Se True esegue augmentation sui dati di training
+    if AUGMENT:
+        OUTPUT_DIR = "/home/phd2/Documenti/colposcopy_data/images_split_and_augmented"
+    else:
+        OUTPUT_DIR = "/home/phd2/Documenti/colposcopy_data/images_split_only"
+
+    # Rapporto di divisione: train / val / test
+    SPLIT_RATIOS = (0.70, 0.15, 0.15)
+    
+    random.seed(42)
+    # Step : dividi in train / val / test
+    split_dataset(class_names=CLASSES, source_dir=SOURCE_DIR, output_dir=OUTPUT_DIR, 
+                  split_ratio=SPLIT_RATIOS, augment=AUGMENT) #augment mi dice se aumentare dati

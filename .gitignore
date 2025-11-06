@@ -1,0 +1,4 @@
+# Ignore files with extension
+*.pth
+*.pyc
+__pycache__/

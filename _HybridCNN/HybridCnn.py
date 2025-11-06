@@ -182,6 +182,7 @@ class HybCNNTrainer:
 
     # ------------------------------
     def train_model(self):
+        best_val_loss = float("inf")
         best_val_acc = 0
         best_val_bal_acc = 0
         patience_counter = 0
@@ -197,10 +198,13 @@ class HybCNNTrainer:
             self.history["val_bal_acc"].append(val_bal_acc)
             self.scheduler.step()
 
-            print(f" Train Loss: {train_loss:.4f} |  Val Loss: {val_loss:.4f} |  Val Acc: {val_acc:.2f}% |  Balanced Acc: {val_bal_acc:.2f}%")
+            print(f" Train Loss: {train_loss:.4f} |  Val Loss: {val_loss:.4f} |  "
+                  f"Val Acc: {val_acc:.2f}% | Balanced Acc: {val_bal_acc:.2f}% | "
+                  f"LR: {self.scheduler.get_last_lr()[0]:.2e}")
 
             # Early stopping sulla balanced accuracy
-            if val_bal_acc > best_val_bal_acc:
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
                 best_val_acc = val_acc
                 best_val_bal_acc = val_bal_acc
                 patience_counter = 0
@@ -249,9 +253,15 @@ class HybCNNTrainer:
 
         print("\nReport per classe:")
         print(classification_report(y_true, y_pred, target_names=["G1", "G2", "NEG"], digits=3))
+        current_dir = os.getcwd()
+        save_dir = os.path.join(current_dir, "results")
+        os.makedirs(save_dir, exist_ok=True)
+        save_classification_report = os.path.join(save_dir, "hybrid_cnn_classification_report.txt")
+        with open(save_classification_report, "w") as f:
+            f.write(classification_report(y_true, y_pred, target_names=["G1", "G2", "NEG"], digits=3))
 
         cm = confusion_matrix(y_true, y_pred)
         disp = ConfusionMatrixDisplay(cm, display_labels=["G1", "G2", "NEG"])
         disp.plot(cmap='Blues')
         plt.title("Confusion Matrix - Test Set")
-        plt.show()
+        plt.savefig(os.path.join(save_dir, "hybrid_cnn_confusion_matrix.png"))
