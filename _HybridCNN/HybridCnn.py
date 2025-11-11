@@ -8,8 +8,9 @@ from PIL import Image
 from tqdm import tqdm
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, balanced_accuracy_score
 import matplotlib.pyplot as plt
-import torch.nn.functional as F
 import numpy as np
+from sklearn.utils.class_weight import compute_class_weight
+
 
 # ============================================================
 # Dataset: solo immagini ROI
@@ -41,66 +42,69 @@ class SimpleROIDataset(Dataset):
 
 
 # ============================================================
-# Modello: ResNet18 con classificatore potenziato
+# Modello: ResNet18 ibrida con layer nominati
 # ============================================================
 class HybridResNet18(nn.Module):
     def __init__(self, num_classes=3):
         super(HybridResNet18, self).__init__()
+
+        # ✅ Carica ResNet18 pre-addestrata
         base = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
 
-        # Sblocca solo gli ultimi layer per fine-tuning
-        for name, param in base.named_parameters():
-            param.requires_grad = False
-        for name, param in base.named_parameters():
-            if "layer4" in name or "fc" in name:
-                param.requires_grad = True
+        # Mantieni i layer con i nomi originali
+        self.conv1 = base.conv1
+        self.bn1 = base.bn1
+        self.relu = base.relu
+        self.maxpool = base.maxpool
+        self.layer1 = base.layer1
+        self.layer2 = base.layer2
+        self.layer3 = base.layer3
+        self.layer4 = base.layer4
 
-        self.feature_extractor = nn.Sequential(*list(base.children())[:-2])
-
-        # Leggera attenzione
+        # Blocco di attenzione
         self.attention = nn.Sequential(
             nn.Conv2d(512, 128, kernel_size=1),
             nn.ReLU(),
             nn.AdaptiveAvgPool2d((1, 1))
         )
 
-        # 🔹 Classificatore migliorato
+        # Classificatore potenziato
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(128, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.6),
             nn.Linear(256, num_classes)
         )
 
+        # 🔒 Congela tutto
+        for _, param in self.named_parameters():
+            param.requires_grad = False
+
+        # 🔓 Sblocca layer superiori e classificatore
+        for name, param in self.named_parameters():
+            if any(k in name for k in ["layer2", "layer3", "layer4", "classifier"]):
+                param.requires_grad = True
+
     def forward(self, x):
-        x = self.feature_extractor(x)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
         x = self.attention(x)
         x = self.classifier(x)
         return x
 
 
 # ============================================================
-# 3CrossEntropy 
-# ============================================================
-class SmoothedCELoss(nn.Module):
-    def __init__(self, smoothing=0.15):
-        super(SmoothedCELoss, self).__init__()
-        self.smoothing = smoothing
-
-    def forward(self, inputs, targets):
-        n_classes = inputs.size(1)
-        log_probs = F.log_softmax(inputs, dim=1)
-        with torch.no_grad():
-            true_dist = torch.zeros_like(log_probs)
-            true_dist.fill_(self.smoothing / (n_classes - 1))
-            true_dist.scatter_(1, targets.unsqueeze(1), 1.0 - self.smoothing)
-        return torch.mean(torch.sum(-true_dist * log_probs, dim=1))
-
-
-# ============================================================
-# 4Trainer
+# Trainer
 # ============================================================
 class HybCNNTrainer:
     def __init__(self, data_root, num_classes, batch_size, lr, num_epochs, patience):
@@ -114,34 +118,32 @@ class HybCNNTrainer:
         self.patience = patience
 
         # Trasformazioni (solo normalizzazione)
-        self.train_transform = transforms.Compose([
+        self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
-        ])
-        self.test_transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
+            transforms.Normalize(mean=[0.3392, 0.2624, 0.2732],
+                                 std=[0.3357, 0.2673, 0.2778])
         ])
 
         # 🔹 Dataset
-        self.train_data = SimpleROIDataset(os.path.join(data_root, "train"), transform=self.train_transform)
-        self.val_data = SimpleROIDataset(os.path.join(data_root, "val"), transform=self.test_transform)
-        self.test_data = SimpleROIDataset(os.path.join(data_root, "test"), transform=self.test_transform)
+        self.train_data = SimpleROIDataset(os.path.join(data_root, "train"), transform=self.transform)
+        self.val_data = SimpleROIDataset(os.path.join(data_root, "val"), transform=self.transform)
+        self.test_data = SimpleROIDataset(os.path.join(data_root, "test"), transform=self.transform)
 
         # 🔹 Dataloader
         self.train_loader = DataLoader(self.train_data, batch_size=batch_size, shuffle=True, num_workers=0)
         self.val_loader = DataLoader(self.val_data, batch_size=batch_size, shuffle=False, num_workers=0)
         self.test_loader = DataLoader(self.test_data, batch_size=batch_size, shuffle=False, num_workers=0)
 
-        # 🔹 Modello e loss
+        # 🔹 Modello e ottimizzatore
         self.model = HybridResNet18(num_classes=num_classes).to(self.device)
-        self.criterion = SmoothedCELoss(smoothing=0.15)
 
-        # 🔹 Ottimizzatore e scheduler
+
+        self.criterion = nn.CrossEntropyLoss()
         self.optimizer = optim.AdamW(filter(lambda p: p.requires_grad, self.model.parameters()), lr=lr, weight_decay=1e-4)
-        self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=10, gamma=0.5) 
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', patience=5, factor=0.5
+        )
 
         self.history = {"train_loss": [], "val_loss": [], "val_acc": [], "val_bal_acc": []}
 
@@ -196,26 +198,27 @@ class HybCNNTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_acc"].append(val_acc)
             self.history["val_bal_acc"].append(val_bal_acc)
-            self.scheduler.step()
+            self.scheduler.step(val_loss)
 
             print(f" Train Loss: {train_loss:.4f} |  Val Loss: {val_loss:.4f} |  "
                   f"Val Acc: {val_acc:.2f}% | Balanced Acc: {val_bal_acc:.2f}% | "
-                  f"LR: {self.scheduler.get_last_lr()[0]:.2e}")
+                  f"LR: {self.optimizer.param_groups[0]['lr']:.2e}")
 
-            # Early stopping sulla balanced accuracy
+            # Early stopping
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_val_acc = val_acc
                 best_val_bal_acc = val_bal_acc
                 patience_counter = 0
                 torch.save(self.model.state_dict(), "best_resnet18_roi.pth")
+                print("✅ Miglior modello salvato!")
             else:
                 patience_counter += 1
                 if patience_counter >= self.patience:
-                    print(" Early stopping triggered.")
+                    print("⏹ Early stopping triggered.")
                     break
 
-        print(f"\n Training completato. Miglior Val Accuracy: {best_val_acc:.2f}% |  Balanced Accuracy: {best_val_bal_acc:.2f}%")
+        print(f"\n🏁 Training completato. Miglior Val Acc: {best_val_acc:.2f}% | Balanced Acc: {best_val_bal_acc:.2f}%")
         self.plot_training()
 
     # ------------------------------
@@ -249,19 +252,20 @@ class HybCNNTrainer:
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
 
         test_loss, test_acc, test_bal_acc, y_true, y_pred = self.evaluate(self.test_loader, "Test")
-        print(f"\n Test finale → Loss: {test_loss:.4f} | Accuracy: {test_acc:.2f}% |  Balanced Accuracy: {test_bal_acc:.2f}%")
+        print(f"\n🧩 Test finale → Loss: {test_loss:.4f} | Accuracy: {test_acc:.2f}% | Balanced Acc: {test_bal_acc:.2f}%")
 
-        print("\nReport per classe:")
-        print(classification_report(y_true, y_pred, target_names=["G1", "G2", "NEG"], digits=3))
-        current_dir = os.getcwd()
-        save_dir = os.path.join(current_dir, "results")
+        report = classification_report(y_true, y_pred, target_names=["G1", "G2", "NEG"], digits=3)
+        print("\nReport per classe:\n", report)
+
+        # 🔹 Salvataggio risultati
+        save_dir = os.path.join(os.getcwd(), "results")
         os.makedirs(save_dir, exist_ok=True)
-        save_classification_report = os.path.join(save_dir, "hybrid_cnn_classification_report.txt")
-        with open(save_classification_report, "w") as f:
-            f.write(classification_report(y_true, y_pred, target_names=["G1", "G2", "NEG"], digits=3))
+        with open(os.path.join(save_dir, "hybrid_cnn_classification_report.txt"), "w") as f:
+            f.write(report)
 
         cm = confusion_matrix(y_true, y_pred)
         disp = ConfusionMatrixDisplay(cm, display_labels=["G1", "G2", "NEG"])
         disp.plot(cmap='Blues')
         plt.title("Confusion Matrix - Test Set")
         plt.savefig(os.path.join(save_dir, "hybrid_cnn_confusion_matrix.png"))
+        print(f"✅ Risultati salvati in: {save_dir}")

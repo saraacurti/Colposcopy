@@ -5,6 +5,8 @@ from glob import glob
 from PIL import Image
 from tqdm import tqdm
 from torchvision import transforms
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 
 # ============================================================
 # 1Augmentazione opzionale
@@ -12,14 +14,11 @@ from torchvision import transforms
 class AdvancedAugment:
     def __init__(self):
         self.transform = transforms.Compose([
-            transforms.RandomApply([transforms.RandomHorizontalFlip(p=1.0)], p=0.5),
-            transforms.RandomApply([transforms.RandomVerticalFlip(p=1.0)], p=0.3),
-            transforms.RandomApply([transforms.RandomRotation(degrees=40)], p=0.8),
-            transforms.RandomApply([transforms.ColorJitter(
-                brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)], p=0.8),
-            transforms.RandomApply([transforms.RandomAffine(
-                degrees=20, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=(-10, 10))], p=0.7),
-            transforms.RandomApply([transforms.GaussianBlur(3)], p=0.3),
+            transforms.RandomResizedCrop(128, scale=(0.9, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            transforms.RandomRotation(10),
         ])
 
     def __call__(self, img):
@@ -119,19 +118,73 @@ if __name__ == "__main__":
     CLASSES = ["G1", "G2", "NEG"]
 
     # Cartella di origine (con ROI + maschere)
-    SOURCE_DIR = "/home/phd2/Documenti/colposcopy_data/images_cropped"
+    SOURCE_DIR = "/Users/saracurti/Desktop/images_cropped"
 
     # Cartella di output (dataset finale)
-    AUGMENT = False  # Se True esegue augmentation sui dati di training
-    if AUGMENT:
-        OUTPUT_DIR = "/home/phd2/Documenti/colposcopy_data/images_split_and_augmented"
+    AUGMENTED = False  # Se True esegue augmentation sui dati di training
+    if AUGMENTED:
+        OUTPUT_DIR = "/Users/saracurti/Desktop/images_split_and_augmented"
     else:
-        OUTPUT_DIR = "/home/phd2/Documenti/colposcopy_data/images_split_only"
+        OUTPUT_DIR = "/Users/saracurti/Desktop/images_split_only"
 
     # Rapporto di divisione: train / val / test
-    SPLIT_RATIOS = (0.70, 0.15, 0.15)
+    SPLIT_RATIOS = (0.80, 0.10, 0.10)
     
     random.seed(42)
     # Step : dividi in train / val / test
     split_dataset(class_names=CLASSES, source_dir=SOURCE_DIR, output_dir=OUTPUT_DIR, 
-                  split_ratio=SPLIT_RATIOS, augment=AUGMENT) #augment mi dice se aumentare dati
+                  split_ratio=SPLIT_RATIOS, augment=AUGMENTED) #augment mi dice se aumentare dati
+    
+
+
+    import torch
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+
+# ============================================================
+# 📊 Calcolo mean e std solo sul training set
+# ============================================================
+def compute_mean_std(train_dir, batch_size=64):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor()
+    ])
+
+    dataset = datasets.ImageFolder(train_dir, transform=transform)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+    mean = 0.
+    std = 0.
+    total_images = 0
+
+    for images, _ in loader:
+        batch_samples = images.size(0)  # numero immagini nel batch
+        images = images.view(batch_samples, images.size(1), -1)  # (batch, 3, H*W)
+        mean += images.mean(2).sum(0)
+        std += images.std(2).sum(0)
+        total_images += batch_samples
+
+    mean /= total_images
+    std /= total_images
+
+    print(f"\n📊 Mean: {mean}")
+    print(f"📊 Std:  {std}")
+
+    # Se vuoi salvare su file per usarle dopo:
+    with open(os.path.join(train_dir, "../normalization.txt"), "w") as f:
+        f.write(f"mean: {mean.tolist()}\n")
+        f.write(f"std: {std.tolist()}\n")
+
+    return mean, std
+
+
+TRAIN_DIR = "/Users/saracurti/Desktop/images_split_only/train"  # percorso al train set--> cambia a secondo del tipo di dati che voglio
+mean, std = compute_mean_std(TRAIN_DIR)
+
+#Caso augmented:
+#  Mean: tensor([0.3392, 0.2624, 0.2732])
+# Std:  tensor([0.3357, 0.2673, 0.2778])
+
+# Caso solo split:
+# Mean: tensor([0.3307, 0.2558, 0.2671])
+# Std:  tensor([0.3395, 0.2707, 0.2822])
