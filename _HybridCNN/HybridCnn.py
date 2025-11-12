@@ -27,8 +27,10 @@ class SimpleROIDataset(Dataset):
             if not os.path.isdir(folder):
                 continue
             for fname in os.listdir(folder):
-                if fname.endswith("_roi.jpg"):
+                # Prendi tutte le immagini (qualsiasi nome, ma formato valido)
+                if fname.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tiff")):
                     self.samples.append((os.path.join(folder, fname), label_idx))
+
 
     def __len__(self):
         return len(self.samples)
@@ -47,61 +49,39 @@ class SimpleROIDataset(Dataset):
 class HybridResNet18(nn.Module):
     def __init__(self, num_classes=3):
         super(HybridResNet18, self).__init__()
-
-        # ✅ Carica ResNet18 pre-addestrata
         base = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
 
-        # Mantieni i layer con i nomi originali
-        self.conv1 = base.conv1
-        self.bn1 = base.bn1
-        self.relu = base.relu
-        self.maxpool = base.maxpool
-        self.layer1 = base.layer1
-        self.layer2 = base.layer2
-        self.layer3 = base.layer3
-        self.layer4 = base.layer4
+        # Sblocca solo gli ultimi layer per fine-tuning
+        for name, param in base.named_parameters():
+            param.requires_grad = False
+        for name, param in base.named_parameters():
+            if "layer3" in name or "layer4" in name or "fc" in name:
+                param.requires_grad = True
 
-        # Blocco di attenzione
+        self.feature_extractor = nn.Sequential(*list(base.children())[:-2])
+
+        # Leggera attenzione
         self.attention = nn.Sequential(
             nn.Conv2d(512, 128, kernel_size=1),
             nn.ReLU(),
             nn.AdaptiveAvgPool2d((1, 1))
         )
 
-        # Classificatore potenziato
+        # 🔹 Classificatore migliorato
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(128, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.Dropout(0.5),
             nn.Linear(256, num_classes)
         )
 
-        # 🔒 Congela tutto
-        for _, param in self.named_parameters():
-            param.requires_grad = False
-
-        # 🔓 Sblocca layer superiori e classificatore
-        for name, param in self.named_parameters():
-            if any(k in name for k in ["layer2", "layer3", "layer4", "classifier"]):
-                param.requires_grad = True
-
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-
+        x = self.feature_extractor(x)
         x = self.attention(x)
         x = self.classifier(x)
         return x
-
 
 # ============================================================
 # Trainer
@@ -117,12 +97,23 @@ class HybCNNTrainer:
         self.num_epochs = num_epochs
         self.patience = patience
 
+        norm_file = os.path.join(data_root, "normalization.txt")
+        
+        if not os.path.exists(norm_file):
+            raise FileNotFoundError(f"❌ File di normalizzazione non trovato: {norm_file}")
+        
+        # 🔹 Legge i valori di mean e std dal file
+        with open(norm_file, "r") as f:
+            lines = f.readlines()
+            mean = eval(lines[0].split(":")[1].strip())
+            std = eval(lines[1].split(":")[1].strip())
+
         # Trasformazioni (solo normalizzazione)
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.3392, 0.2624, 0.2732],
-                                 std=[0.3357, 0.2673, 0.2778])
+            transforms.Normalize(mean=mean,
+                                 std=std)
         ])
 
         # 🔹 Dataset
@@ -223,8 +214,9 @@ class HybCNNTrainer:
 
     # ------------------------------
     def plot_training(self):
+        save_dir = os.path.join(os.getcwd(), "resultsHYBIRD")
+        os.makedirs(save_dir, exist_ok=True)
         plt.figure(figsize=(9, 5))
-        plt.subplot(1, 2, 1)
         plt.plot(self.history["train_loss"], label="Train Loss")
         plt.plot(self.history["val_loss"], label="Val Loss")
         plt.title("Andamento della Loss")
@@ -233,17 +225,8 @@ class HybCNNTrainer:
         plt.legend()
         plt.grid(True)
 
-        plt.subplot(1, 2, 2)
-        plt.plot(self.history["val_acc"], label="Val Accuracy")
-        plt.plot(self.history["val_bal_acc"], label="Val Balanced Accuracy")
-        plt.title("Accuratezza e Balanced Accuracy")
-        plt.xlabel("Epoca")
-        plt.ylabel("Accuracy (%)")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, "hybrid_cnn_CURVELOSS.png"))  
         plt.show()
-
     # ------------------------------
     def test_model(self, model_path=None):
         if model_path is None:
@@ -258,7 +241,7 @@ class HybCNNTrainer:
         print("\nReport per classe:\n", report)
 
         # 🔹 Salvataggio risultati
-        save_dir = os.path.join(os.getcwd(), "results")
+        save_dir = os.path.join(os.getcwd(), "resultsHYBIRD")
         os.makedirs(save_dir, exist_ok=True)
         with open(os.path.join(save_dir, "hybrid_cnn_classification_report.txt"), "w") as f:
             f.write(report)

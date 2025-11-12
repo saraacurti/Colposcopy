@@ -11,7 +11,7 @@ from _CNN.CNN import CNNClassifier
 
 
 class CNNTrainer:
-    def __init__(self, data_root, num_classes=3, batch_size=16, lr=0.001795, weight_decay=6.59e-05, num_epochs=100, patience=20, pretrained_weights="/Users/saracurti/myproject/Colposcopy/Colposcopy/_CNN/results/best_cnn_model_trainer.pth" ):
+    def __init__(self, data_root, num_classes=3, batch_size=16, lr=0.001795, weight_decay=6.59e-05, num_epochs=60, patience=20 ):
         self.data_root = data_root
         self.num_classes = num_classes
         self.batch_size = batch_size
@@ -23,13 +23,25 @@ class CNNTrainer:
 
         print(f"🧠 Addestramento su device: {self.device}")
 
-        # === Trasformazioni (senza augmentation) ===
+        norm_file = os.path.join(data_root, "normalization.txt")
+        
+        if not os.path.exists(norm_file):
+            raise FileNotFoundError(f"❌ File di normalizzazione non trovato: {norm_file}")
+        
+        # 🔹 Legge i valori di mean e std dal file
+        with open(norm_file, "r") as f:
+            lines = f.readlines()
+            mean = eval(lines[0].split(":")[1].strip())
+            std = eval(lines[1].split(":")[1].strip())
+
+        # Trasformazioni (solo normalizzazione)
         self.transform = transforms.Compose([
-            transforms.Resize((128, 128)),
+            transforms.Resize((224, 224)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.3392, 0.2624, 0.2732],
-                                        std=[0.3357, 0.2673, 0.2778])
+            transforms.Normalize(mean=mean,
+                                 std=std)
         ])
+
 
         # === Dataset ===
         self.train_dataset = datasets.ImageFolder(os.path.join(data_root, "train"), transform=self.transform)
@@ -45,16 +57,16 @@ class CNNTrainer:
         self.model = CNNClassifier(num_classes=num_classes, dropout_rate=0.401).to(self.device)
 
 
-        # === Carica pesi pre-addestrati se specificati ===
-        if os.path.exists(pretrained_weights):
-            print(f" Caricamento pesi pre-addestrati da: {pretrained_weights}")
-            self.model.load_state_dict(torch.load(pretrained_weights, map_location=self.device))
-        else:
-            print(" Nessun peso pre-addestrato caricato (training da zero).")
         # === Criterio e ottimizzatore (SGD da Optuna) ===
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.SGD(self.model.parameters(),
-                                   lr=self.lr, momentum=0.9, weight_decay=self.weight_decay)
+        self.optimizer = optim.AdamW(self.model.parameters(),
+                                   lr=self.lr,  weight_decay=self.weight_decay)
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.5,
+            patience=5,
+        )
 
         # === Early stopping ===
         self.best_val_loss = float("inf")
@@ -81,7 +93,7 @@ class CNNTrainer:
             total += labels.size(0)
             correct += (preds == labels).sum().item()
 
-        avg_loss = total_loss / len(self.loader)
+        avg_loss = total_loss / len(self.train_loader)
         acc = 100 * correct / total
         return avg_loss, acc
 
@@ -104,7 +116,7 @@ class CNNTrainer:
                 y_true.extend(labels.cpu().numpy())
                 y_pred.extend(preds.cpu().numpy())
 
-        avg_loss = total_loss / len(self.loader)
+        avg_loss = total_loss / len(self.val_loader)
         acc = 100 * correct / total
         bal_acc = 100 * balanced_accuracy_score(y_true, y_pred)
         f1 = 100 * f1_score(y_true, y_pred, average="macro")
@@ -114,7 +126,7 @@ class CNNTrainer:
     # Training completo
     # ============================
     def train_model(self):
-        print(f"\n🚀 Inizio addestramento CNN base (SGD, dropout=0.4)...")
+        print(f"\n🚀 Inizio addestramento CNN base ...")
 
         save_dir = os.path.join(os.path.dirname(__file__), "results")
         os.makedirs(save_dir, exist_ok=True)
@@ -131,13 +143,13 @@ class CNNTrainer:
                   f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | "
                   f"Balanced Acc: {val_bal_acc:.2f}% | F1: {val_f1:.2f}%")
 
-            self.scheduler.step()
+            self.scheduler.step(val_loss)
 
             # Early stopping
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.early_stop_counter = 0
-                torch.save(self.model.state_dict(), os.path.join(save_dir, "best_cnn_model_trainer.pth"))
+                torch.save(self.model.state_dict(), os.path.join(save_dir, "best_cnn_model.pth"))
                 print("✅ Miglior modello salvato!")
             else:
                 self.early_stop_counter += 1
@@ -154,13 +166,13 @@ class CNNTrainer:
         plt.ylabel("Loss")
         plt.legend()
         plt.title("Training vs Validation Loss")
-        plt.savefig(os.path.join(save_dir, "training_curve.png"))
+        plt.savefig(os.path.join(save_dir, "training_curveCNN.png"))
 
     # ============================
     # Test finale
     # ============================
     def test_model(self, model_path=None):
-        save_dir = os.path.join(os.path.dirname(__file__), "results_privato")
+        save_dir = os.path.join(os.path.dirname(__file__), "results")
         if model_path is None:
             model_path = os.path.join(save_dir, "best_cnn_model.pth")
         self.model.load_state_dict(torch.load(model_path, map_location=self.device))
