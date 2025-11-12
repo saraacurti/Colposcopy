@@ -8,14 +8,15 @@ import multiprocessing
 from _ViT.ViTTrainerNew import ViTTrainerNew
 
 # Config
-DATA_ROOT = "/Users/saracurti/Desktop/images_split_and_augmented"
-#DATA_ROOT = "/Users/saracurti/Desktop/images_split_only"
+#DATA_ROOT = "/Users/saracurti/Desktop/dataset/imagesnoprepsplit_and_augmented"
+DATA_ROOT = "/Users/saracurti/Desktop/dataset/imagescrop_split_and_augmented"
+#DATA_ROOT = "/Users/saracurti/Desktop/dataset/imagesnosr_split_and_augmented"
 NUM_CLASSES = 3
 
 
 # -------------------------SELEZIONE MODELLO-------------------------
-cnn = False   # CNN semplice
-cnnHyb = True # Hybrid CNN
+cnn = True   # CNN semplice
+cnnHyb = False # Hybrid CNN
 vit = False      # preaddestrato
 vitnew = False    # nuovo
 
@@ -29,15 +30,13 @@ if __name__ == "__main__":
         num_classes=3,
         batch_size=16,
         lr=0.001795,
-        num_epochs=30,
-        patience=70
+        num_epochs=60,
+        patience=30
 )
         trainer.train_model()
         trainer.test_model()
    
    
-
-
     if cnnHyb:
         print("Avvio addestramento Hybrid CNN...")
         trainer = HybCNNTrainer(
@@ -45,8 +44,8 @@ if __name__ == "__main__":
             num_classes=NUM_CLASSES,
             batch_size=32,
             lr=3e-3,
-            num_epochs=75,
-            patience=100
+            num_epochs=60,
+            patience=30
         )
         trainer.train_model()
         trainer.test_model()
