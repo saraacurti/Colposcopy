@@ -1,0 +1,13 @@
+Test Loss: 1.0153
+Test Accuracy: 44.12%
+Balanced Accuracy: 37.70%
+
+              precision    recall  f1-score   support
+
+          G1      0.476     0.588     0.526        17
+          G2      0.500     0.400     0.444        10
+         NEG      0.200     0.143     0.167         7
+
+    accuracy                          0.441        34
+   macro avg      0.392     0.377     0.379        34
+weighted avg      0.426     0.441     0.428        34
